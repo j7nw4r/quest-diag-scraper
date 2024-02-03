@@ -32,7 +32,7 @@ func main() {
 func scrape() chromedp.Tasks {
 	var nodes []*cdp.Node
 	var specialtyUrls []string
-	var resultsNodes []*cdp.Node
+	var resultsMap = make(map[string]*cdp.Node)
 
 	return chromedp.Tasks{
 		chromedp.Navigate(root_url),
@@ -42,7 +42,7 @@ func scrape() chromedp.Tasks {
 		chromedp.ActionFunc(crawlChildren(&nodes)),
 		//chromedp.ActionFunc(displayNodes(&nodes)),
 		chromedp.ActionFunc(gatherSpecialtyUrls(&nodes, &specialtyUrls)),
-		chromedp.ActionFunc(gatherTestPageUrls(&specialtyUrls, &resultsNodes)),
+		chromedp.ActionFunc(gatherTestPageUrls(&specialtyUrls, &resultsMap)),
 	}
 }
 
@@ -101,20 +101,23 @@ func printNodes(w io.Writer, nodes []*cdp.Node, padding, indent string) {
 	}
 }
 
-func gatherTestPageUrls(specialtyUrls *[]string, nodes *[]*cdp.Node) func(ctx context.Context) error {
+func gatherTestPageUrls(specialtyUrls *[]string, nodeMap *map[string]*cdp.Node) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		var retErr error
 		var tmpNodes []*cdp.Node
 		for _, specialtyUrl := range *specialtyUrls {
+			specialtyUrl = fmt.Sprintf("%s&rows=4000", specialtyUrl)
 			log.Printf("Visiting %s", specialtyUrl)
 			retErr = errors.Join(retErr, chromedp.Run(
 				ctx,
-				chromedp.Navigate(fmt.Sprintf("%s&rows=4000", specialtyUrl)),
+				chromedp.Navigate(specialtyUrl),
 				chromedp.Sleep(10*time.Second),
 				chromedp.Nodes("md-card", &tmpNodes),
 			))
-			*nodes = append(*nodes, tmpNodes...)
-			log.Printf("number of md-cards: %d", len(*nodes))
+			for _, tmpNode := range tmpNodes {
+				(*nodeMap)[tmpNode.AttributeValue("id")] = tmpNode
+			}
+			log.Printf("number of md-cards: %d", len(*nodeMap))
 		}
 		return retErr
 	}
