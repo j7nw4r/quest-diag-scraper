@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/chromedp/cdproto/cdp"
@@ -19,7 +20,7 @@ import (
 const root_url string = "https://www.questdiagnostics.com/healthcare-professionals/test-directory"
 
 type TestData struct {
-	name string
+	Name string `json:"name"`
 }
 
 func main() {
@@ -30,7 +31,8 @@ func main() {
 	defer cdpCancel()
 
 	var buf []byte
-	if err := chromedp.Run(ctx, scrape(&buf)); err != nil {
+	testDataMap := make(map[int]TestData)
+	if err := chromedp.Run(ctx, scrape(&buf, &testDataMap)); err != nil {
 		log.Fatalln(err)
 	}
 
@@ -43,11 +45,10 @@ func main() {
 	}
 }
 
-func scrape(buf *[]byte) chromedp.Tasks {
+func scrape(buf *[]byte, testDataMap *map[int]TestData) chromedp.Tasks {
 	var nodes []*cdp.Node
 	var specialtyUrls []string
 	var resultsMap = make(map[int]*cdp.Node)
-	var testData = make(map[int]TestData)
 
 	return chromedp.Tasks{
 		chromedp.Navigate(root_url),
@@ -58,15 +59,20 @@ func scrape(buf *[]byte) chromedp.Tasks {
 		chromedp.ActionFunc(gatherSpecialtyUrls(&nodes, &specialtyUrls)),
 		chromedp.ActionFunc(gatherTestPageUrls(&specialtyUrls, &resultsMap)),
 		chromedp.ActionFunc(func(ctx context.Context) error {
+			counter := 0
 			for id := range resultsMap {
 				if err := chromedp.Run(ctx,
 					chromedp.Navigate(fmt.Sprintf("https://testdirectory.questdiagnostics.com/test/test-detail/%d/complement-component-c3c?p=r&q=*&cc=MASTER", id)),
 					chromedp.Sleep(2*time.Second),
 					chromedp.FullScreenshot(buf, 100),
-					chromedp.ActionFunc(gatherTestData(id, &testData)),
+					chromedp.ActionFunc(gatherTestData(id, testDataMap)),
 				); err != nil {
 					log.Printf("could not visit: %d", id)
 					log.Fatalln(err)
+				}
+				counter += 1
+				if counter > 100 {
+					break
 				}
 			}
 			return nil
@@ -139,13 +145,16 @@ func gatherTestPageUrls(specialtyUrls *[]string, nodeMap *map[int]*cdp.Node) fun
 			retErr = errors.Join(retErr, chromedp.Run(
 				ctx,
 				chromedp.Navigate(specialtyUrl),
-				chromedp.Sleep(10*time.Second),
+				chromedp.Sleep(5*time.Second),
 				chromedp.Nodes("md-card", &tmpNodes),
 			))
 
 			for _, tmpNode := range tmpNodes {
-				id := tmpNode.AttributeValue("id")
-				idNum, err := strconv.Atoi(strings.TrimPrefix(id, "MASTER"))
+				id := strings.TrimPrefix(tmpNode.AttributeValue("id"), "MASTER")
+				if id == "" {
+					continue
+				}
+				idNum, err := strconv.Atoi(id)
 				if err != nil {
 					continue
 				}
@@ -162,8 +171,18 @@ func gatherTestData(id int, testDataMap *map[int]TestData) func(ctx context.Cont
 	return func(ctx context.Context) error {
 		var retErr error
 		testData := TestData{}
-		errors.Join(addName(ctx, &testData), retErr)
+		if err := errors.Join(addName(ctx, &testData), retErr); err != nil {
+			log.Println(err)
+			return nil
+		}
+		if testData.Name == "" {
+			return nil
+		}
+
 		(*testDataMap)[id] = testData
+		if err := json.NewEncoder(os.Stdout).Encode(testData); err != nil {
+			errors.Join(retErr, err)
+		}
 		return retErr
 	}
 }
@@ -182,8 +201,8 @@ func addName(ctx context.Context, testData *TestData) error {
 
 	node := nodes[0]
 	for _, child := range node.Children {
-		if child.NodeName == "#text" {
-			testData.name = child.NodeValue
+		if child.NodeName != "#text" {
+			testData.Name = child.NodeValue
 			break
 		}
 	}
